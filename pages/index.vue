@@ -1,8 +1,8 @@
 <template>
   <div class="container">
-    <button @click="connectWallet" class="btn">Kết nối ví</button>
-    <button @click="buy" class="btn">Mua Token</button>
-    <button @click="claim" class="btn">Claim Token</button>
+    <button @click="connectWallet" class="btn">Connect</button>
+    <button @click="buy" class="btn">Buy</button>
+    <button @click="claim" class="btn">Claim</button>
   </div>
 </template>
 
@@ -19,14 +19,13 @@ export default {
     async connectWallet() {
       try {
         this.wallet = await connectWallet()
-        console.log('Wallet connected:', this.wallet.toString())
       } catch (error) {
-        console.error(error)
+        alert(error.message)
       }
     },
     async buy() {
       if (!this.wallet) return alert('Kết nối ví trước!')
-      const quoteSolAmount = 1 // Số SOL để mua
+      const quoteSolAmount = 0.01 // Số SOL để mua
       try {
         await buyToken(this.wallet, quoteSolAmount)
         alert('Mua token thành công!')

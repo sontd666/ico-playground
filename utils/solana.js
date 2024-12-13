@@ -1,34 +1,38 @@
 import { getAssociatedTokenAddress } from '@solana/spl-token'
-import { ASSOCIATED_PROGRAM_ID } from '@coral-xyz/anchor/dist/cjs/utils/token'
+import {
+  ASSOCIATED_PROGRAM_ID,
+  TOKEN_PROGRAM_ID,
+} from '@coral-xyz/anchor/dist/cjs/utils/token'
+import { AnchorProvider, Program, BN } from '@coral-xyz/anchor'
 import {
   Connection,
   clusterApiUrl,
   SystemProgram,
   PublicKey,
+  sendAndConfirmTransaction,
+  SYSVAR_RENT_PUBKEY,
+  LAMPORTS_PER_SOL,
+  SendTransactionError,
 } from '@solana/web3.js'
-import * as anchor from '@project-serum/anchor'
 
-const PRESALE_SEED = 'PRESALE_SEED'
 const USER_SEED = 'USER_SEED'
+const PRESALE_SEED = 'PRESALE_SEED'
 const PRESALE_VAULT = 'PRESALE_VAULT'
-const PROGRAM_ID = anchor.utils.token.TOKEN_PROGRAM_ID
-
-const connection = new Connection(clusterApiUrl('devnet'))
-const adminPubkey = new anchor.web3.PublicKey(
-  'CGQB1L184FwDeJeub8Fwso694J9dXqumCYFY2CeF4J5G'
-)
-const programId = new anchor.web3.PublicKey(
-  'Ewq6vDD2BXbepcuBCxNyrc8g5q2kyeh19o7aAcVzwnfg'
-)
-const provider = new anchor.AnchorProvider(connection, window.solana, {
-  commitment: 'confirmed',
-})
 
 const mint = new PublicKey('3n5bTsfVfbaSF4q9x4VJZRbcnoTQSYNKXFB5pgZ4Q2rg')
+const PROGRAM_ID = new PublicKey('Ewq6vDD2BXbepcuBCxNyrc8g5q2kyeh19o7aAcVzwnfg')
+const adminPubkey = new PublicKey(
+  'CGQB1L184FwDeJeub8Fwso694J9dXqumCYFY2CeF4J5G'
+)
+
+const connection = new Connection(clusterApiUrl('devnet'), 'confirmed')
+const provider = new AnchorProvider(connection, window.solana, {
+  commitment: 'processed',
+})
 
 const loadIDL = async () => {
   try {
-    const response = await fetch('/presale.json') // Fetch IDL from /static folder
+    const response = await fetch('/presale.json')
     const idl = await response.json()
     return idl
   } catch (error) {
@@ -37,49 +41,30 @@ const loadIDL = async () => {
 }
 
 // address of userinfo PDA
-const getUserInfoPDA = async () => {
-  return (
-    await PublicKey.findProgramAddressSync([Buffer.from(USER_SEED)], PROGRAM_ID)
+const getUserInfoPDA = () => {
+  return PublicKey.findProgramAddressSync(
+    [Buffer.from(USER_SEED)],
+    PROGRAM_ID
   )[0]
 }
-
 // address of presaleinfo PDA
-const getPresalePDA = async () => {
-  return await PublicKey.findProgramAddressSync(
+const getPresalePDA = () => {
+  return PublicKey.findProgramAddressSync(
     [Buffer.from(PRESALE_SEED)],
     PROGRAM_ID
   )
 }
-
 // address of presalevault PDA
-const getVaultPDA = async () => {
-  return await PublicKey.findProgramAddressSync(
+const getVaultPDA = () => {
+  return PublicKey.findProgramAddressSync(
     [Buffer.from(PRESALE_VAULT)],
     PROGRAM_ID
   )
 }
 
-/**
- * Get the associated token address for a given mint and owner
- * @param {PublicKey} mint - The mint address of the token
- * @param {PublicKey} owner - The owner of the associated token account
- * @param {boolean} allowOwnerOffCurve - If true, allows the owner to be a PDA (default: false)
- * @returns {Promise<PublicKey>} - The associated token address
- */
-const getAssociatedTokenAddressSync = async (
-  mint,
-  owner,
-  allowOwnerOffCurve = false
-) => {
-  return await getAssociatedTokenAddress(
-    mint, // The token mint address
-    owner, // The wallet or PDA that owns the token
-    allowOwnerOffCurve // Whether the owner can be off-curve (defaults to false)
-  )
-}
-
 export const connectWallet = async () => {
-  if (!window.solana) throw new Error('Solana wallet not found')
+  if (!window.solana || !window.solana.isPhantom)
+    throw new Error('Please install Phantom Wallet')
 
   const response = await window.solana.connect()
   const publicKey = response.publicKey.toString()
@@ -89,86 +74,112 @@ export const connectWallet = async () => {
 }
 
 export const buyToken = async (buyerPubkey, quoteSolAmount) => {
+  const connection = new Connection(clusterApiUrl('devnet'), 'confirmed')
+  const provider = new AnchorProvider(connection, window.solana, {
+    commitment: 'processed',
+  })
   const idl = await loadIDL()
-  console.log('idl', idl)
-  console.log('programId', programId)
-  console.log('provider', provider)
+  const program = new Program(idl, provider)
 
-  const program = new anchor.Program(idl, programId, provider)
+  const [presalePDA] = getPresalePDA()
+  const [presaleVault] = getVaultPDA()
+  const userInfo = getUserInfoPDA()
 
-  const [presalePDA] = await getPresalePDA()
-  const [presaleVault] = await getVaultPDA()
-  const userInfo = await getUserInfoPDA()
+  try {
+    // preparing transaction
+    const tx = await program.methods
+      .buyToken(new BN(quoteSolAmount * LAMPORTS_PER_SOL))
+      .accountsPartial({
+        userInfo,
+        presaleVault,
+        presaleInfo: presalePDA,
+        presaleAuthority: adminPubkey,
+        buyer: buyerPubkey,
+        rent: SYSVAR_RENT_PUBKEY,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        systemProgram: SystemProgram.programId,
+        associatedTokenProgram: ASSOCIATED_PROGRAM_ID,
+      })
+      .transaction()
+    tx.feePayer = buyerPubkey
+    tx.recentBlockhash = (await connection.getLatestBlockhash()).blockhash
 
-  console.log('program', program)
-  const tx = await program.methods
-    .buyToken(quoteSolAmount)
-    .accountsPartial({
-      userInfo,
-      presaleInfo: presalePDA,
-      presaleAuthority: adminPubkey,
-      presaleVault: presaleVault,
-      buyer: buyerPubkey, // dia chi vi user
-      rent: anchor.web3.SYSVAR_RENT_PUBKEY,
-      systemProgram: SystemProgram.programId,
-      tokenProgram: PROGRAM_ID,
-      associatedTokenProgram: ASSOCIATED_PROGRAM_ID,
-    })
-    .signers([buyerPubkey])
-    .transaction()
+    // Simulate transaction (optional for debugging)
+    console.log('Simulating transaction...')
+    console.log(await connection.simulateTransaction(tx))
 
-  tx.feePayer = buyerPubkey
-  tx.recentBlockhash = (await connection.getLatestBlockhash()).blockhash
+    // Sign and send transaction
+    const signedTx = await window.solana.signTransaction(tx)
+    const signature = await connection.sendRawTransaction(signedTx.serialize())
+    await connection.confirmTransaction(signature)
 
-  const signature = await anchor.web3.sendAndConfirmTransaction(
-    connection,
-    tx,
-    [buyerPubkey]
-  )
-  console.log(
-    `Transaction success: https://solscan.io/tx/${signature}?cluster=devnet`
-  )
+    console.log(
+      `Transaction successful: https://solscan.io/tx/${signature}?cluster=devnet`
+    )
 
-  return signature
+    // Fetch post-transaction state
+    const userState = await program.account.userInfo.fetch(userInfo)
+    const vaultBalance = await connection.getBalance(presaleVault)
+
+    console.log(
+      'Presale Vault Balance:',
+      vaultBalance,
+      'Address:',
+      presaleVault
+    )
+    console.log('User State:', userState)
+
+    return signature
+  } catch (error) {
+    throw error
+  }
 }
 
 export const claimToken = async (buyerPubkey) => {
-  const [presalePDA, bump] = await getPresalePDA()
+  const [presalePDA, bump] = getPresalePDA()
+  const userInfo = getUserInfoPDA()
+  const [presaleInfo] = getPresalePDA()
 
-  const presalePresaleTokenATA = await getAssociatedTokenAddressSync(
-    mint,
-    presalePDA,
-    true
+  const presalePresaleTokenAssociatedTokenAccount =
+    await getAssociatedTokenAddress(mint, presalePDA, true)
+  console.log('presale ATA: ', presalePresaleTokenAssociatedTokenAccount)
+  console.log(
+    'token balance: ',
+    await connection.getTokenAccountBalance(
+      presalePresaleTokenAssociatedTokenAccount
+    )
   )
-  const buyerPresaleTokenATA = await getAssociatedTokenAddressSync(
-    mint,
-    buyerPubkey,
-    true
+  const buyerPresaleTokenAssociatedTokenAccount =
+    await getAssociatedTokenAddress(mint, buyerPubkey, true)
+  console.log('buyer ATA: ', presalePresaleTokenAssociatedTokenAccount)
+  console.log(
+    'token balance: ',
+    await connection.getTokenAccountBalance(
+      presalePresaleTokenAssociatedTokenAccount
+    )
   )
-  const userInfo = await getUserInfoPDA()
-  const [presaleInfo] = await getPresalePDA()
 
   const tx = await program.methods
     .claimToken(bump)
     .accountsPartial({
       presaleTokenMintAccount: mint,
-      buyerPresaleTokenAssociatedTokenAccount: buyerPresaleTokenATA,
-      presalePresaleTokenAssociatedTokenAccount: presalePresaleTokenATA,
-      userInfo: userInfo,
-      presaleInfo: presaleInfo,
+      buyerPresaleTokenAssociatedTokenAccount:
+        buyerPresaleTokenAssociatedTokenAccount,
+      presalePresaleTokenAssociatedTokenAccount:
+        presalePresaleTokenAssociatedTokenAccount,
+      userInfo,
+      presaleInfo,
       presaleAuthority: adminPubkey,
       buyer: buyerPubkey,
-      rent: anchor.web3.SYSVAR_RENT_PUBKEY,
-      systemProgram: anchor.web3.SystemProgram.programId,
+      rent: SYSVAR_RENT_PUBKEY,
+      systemProgram: web3.SystemProgram.programId,
     })
-    .signers([buyerPubkey])
+    .signers([buyer])
     .transaction()
 
-  const signature = await anchor.web3.sendAndConfirmTransaction(
-    connection,
-    tx,
-    [buyerPubkey]
-  )
+  const signature = await sendAndConfirmTransaction(connection, tx, [
+    buyerPubkey,
+  ])
   console.log(
     `Transaction success: https://solscan.io/tx/${signature}?cluster=devnet`
   )

@@ -67,6 +67,7 @@ export default {
       '@solana/spl-token',
       '@solana/codecs-data-structures',
       '@solana',
+      '@coral-xyz/anchor',
     ],
   },
 }
